@@ -10,6 +10,14 @@ movebcd mac
 	lcall putchar
 endmac
 
+displayvariable mac
+    Set_Cursor(1,%0)
+    Display_BCD(%1)
+    Set_Cursor(1,%2)
+    mov a, %3
+    orl a, #0x30
+	lcall ?WriteData
+	endmac
 
 increment1 mac
 	mov a, %0
@@ -51,104 +59,30 @@ buttonpress mac
    done1%md:
 endmac
 
-HEX_print_0 mac		;prints 0
-	setb PINhexA
-	setb PINhexB
-	setb PINhexC
-	setb PINhexD
-	setb PINhexE
-	setb PINhexF
-	clr PINhexG
-endmac
 
-HEX_print_1 mac		;prints 1
-	clr PINhexA
-	setb PINhexB
-	setb PINhexC
-	clr PINhexD
-	clr PINhexE
-	clr PINhexF
-	clr PINhexG
-endmac
 
-HEX_print_2 mac		;prints 2
-	setb PINhexA
-	setb PINhexB
-	clr PINhexC
-	setb PINhexD
-	setb PINhexE
-	clr PINhexF
-	setb PINhexG
-endmac
 
-HEX_print_3 mac		;prints 3
-	setb PINhexA
-	setb PINhexB
-	setb PINhexC
-	setb PINhexD
-	clr PINhexE
-	clr PINhexF
-	setb PINhexG
-endmac
 
-HEX_print_4 mac		;prints 4
-	clr PINhexA
-	setb PINhexB
-	setb PINhexC
-	clr PINhexD
-	clr PINhexE
-	setb PINhexF
-	setb PINhexG
-endmac
 
-HEX_print_5 mac		;prints 5
-	setb PINhexA
-	clr PINhexB
-	setb PINhexC
-	setb PINhexD
-	clr PINhexE
-	setb PINhexF
-	setb PINhexG
-endmac
 
-HEX_print_6 mac		;prints 6
-	setb PINhexA
-	clr PINhexB
-	setb PINhexC
-	setb PINhexD
-	setb PINhexE
-	setb PINhexF
-	setb PINhexG
-endmac
 
-HEX_print_7 mac		;prints 7
-	setb PINhexA
-	setb PINhexB
-	setb PINhexC
-	clr PINhexD
-	clr PINhexE
-	clr PINhexF
-	clr PINhexG
-endmac
-
-HEX_print_8 mac		;prints 8
-	setb PINhexA
-	setb PINhexB
-	setb PINhexC
-	setb PINhexD
-	setb PINhexE
-	setb PINhexF
-	setb PINhexG
-endmac
-
-HEX_print_9 mac		;prints 9
-	setb PINhexA
-	setb PINhexB
-	setb PINhexC
-	setb PINhexD
-	clr PINhexE
-	setb PINhexF
-	setb PINhexG
-endmac
+forever:
+    clr CE_ADC
+	mov R0, #00000001B ; Start bit:1
+	lcall DO_SPI_G
+	mov R0, #10000000B ; Single ended, read channel 0
+	lcall DO_SPI_G
+	mov a, R1 ; R1 contains bits 8 and 9
+	anl a, #00000011B ; We need only the two least significant bits
+	mov Result+1, a ; Save result high.
+	mov R0, #55H ; It doesn't matter what we transmit...
+	lcall DO_SPI_G
+	mov Result, R1 ; R1 contains bits 0 to 7. Save result low.
+	setb CE_ADC
+	lcall Delay
+	
+	;RETRIEVING TEMPERATURE OF OVEN
+	lcall Do_Something_With_Result
+	ret
 
 $LIST
