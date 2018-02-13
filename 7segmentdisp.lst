@@ -1,0 +1,336 @@
+0000              1   ; ISR_example.asm: a) Increments/decrements a BCD variable every half second using
+0000              2   ; an ISR for timer 2; b) Generates a 2kHz square wave at pin P3.7 using
+0000              3   ; an ISR for timer 0; and c) in the 'main' loop it displays the variable
+0000              4   ; incremented/decremented using the ISR for timer 2 on the LCD.  Also resets it to 
+0000              5   ; zero if the 'BOOT' pushbutton connected to P4.5 is pressed.
+                  7   $LIST
+0000              9   
+0000             10   ; There is a couple of typos in MODLP51 in the definition of the timer 0/1 reload
+0000             11   ; special function registers (SFRs), so:
+0000             12   
+0000             13   TIMER0_RELOAD_L DATA 0xf2
+0000             14   TIMER1_RELOAD_L DATA 0xf3
+0000             15   TIMER0_RELOAD_H DATA 0xf4
+0000             16   TIMER1_RELOAD_H DATA 0xf5
+0000             17   
+0000             18   CLK           EQU 22118400 ; Microcontroller system crystal frequency in Hz
+0000             19   TIMER0_RATE   EQU 4096     ; 2048Hz squarewave (peak amplitude of CEM-1203 speaker)
+0000             20   TIMER0_RELOAD EQU ((65536-(CLK/TIMER0_RATE)))
+0000             21   TIMER2_RATE   EQU 1000     ; 1000Hz, for a timer tick of 1ms
+0000             22   TIMER2_RELOAD EQU ((65536-(CLK/TIMER2_RATE)))
+0000             23   
+0000             24   CLEAR         equ P2.4
+0000             25   SOUND_OUT     equ P3.7
+0000             26   UPDOWN        equ P1.0
+0000             27   
+0000             28   ; For the 7-segment display
+0000             29   SEGA equ P0.2
+0000             30   SEGB equ P0.0
+0000             31   SEGC equ P3.6
+0000             32   SEGD equ P2.7
+0000             33   SEGE equ P4.5
+0000             34   SEGF equ P0.7
+0000             35   SEGG equ P2.6
+0000             36   SEGP equ P2.5
+0000             37   CA1  equ P0.5
+0000             38   CA2  equ P0.6
+0000             39   CA3  equ P0.4
+0000             40   
+0000             41   ; Reset vector
+0000             42   org 0x0000
+0000 0201B7      43       ljmp main
+0003             44   
+0003             45   ; External interrupt 0 vector (not used in this code)
+0003             46   org 0x0003
+0003 32          47            reti
+0004             48   
+0004             49   ; Timer/Counter 0 overflow interrupt vector
+000B             50   org 0x000B
+000B 020106      51            ljmp Timer0_ISR
+000E             52   
+000E             53   ; External interrupt 1 vector (not used in this code)
+0013             54   org 0x0013
+0013 32          55            reti
+0014             56   
+0014             57   ; Timer/Counter 1 overflow interrupt vector (not used in this code)
+001B             58   org 0x001B
+001B 32          59            reti
+001C             60   
+001C             61   ; Serial port receive/transmit interrupt vector (not used in this code)
+0023             62   org 0x0023 
+0023 32          63            reti
+0024             64            
+0024             65   ; Timer/Counter 2 overflow interrupt vector
+002B             66   org 0x002B
+002B 020143      67            ljmp Timer2_ISR
+002E             68   
+002E             69   ; In the 8051 we can define direct access variables starting at location 0x30 up to location 0x7F
+0030             70   dseg at 0x30
+0030             71   Count1ms:     ds 2 ; Used to determine when half second has passed
+0032             72   BCD_counter:  ds 1 ; The BCD counter incrememted in the ISR and displayed in the main loop
+0033             73   Disp1:  ds 1 
+0034             74   Disp2:  ds 1
+0035             75   Disp3:  ds 1
+0036             76   statehex:  ds 1
+0037             77   
+0037             78   ; In the 8051 we have variables that are 1-bit in size.  We can use the setb, clr, jb, and jnb
+0037             79   ; instructions with these variables.  This is how you define a 1-bit variable:
+0000             80   bseg
+0000             81   half_seconds_flag: dbit 1 ; Set to one in the ISR every time 500 ms had passed
+0001             82   
+002E             83   cseg
+002E             84   ; These 'equ' must match the wiring between the microcontroller and the LCD!
+002E             85   LCD_RS equ P1.1
+002E             86   LCD_RW equ P1.2
+002E             87   LCD_E  equ P1.3
+002E             88   LCD_D4 equ P3.2
+002E             89   LCD_D5 equ P3.3
+002E             90   LCD_D6 equ P3.4
+002E             91   LCD_D7 equ P3.5
+                 93   	$LIST
+00DC             95   
+00DC             96   ;                     1234567890123456    <- This helps determine the location of the counter
+00DC 4243445F    97   Initial_Message:  db 'BCD_counter: xx ', 0
+     636F756E
+     7465723A
+     20787820
+     00
+00ED             98   
+00ED             99   ;---------------------------------;
+00ED            100   ; Routine to initialize the ISR   ;
+00ED            101   ; for timer 0                     ;
+00ED            102   ;---------------------------------;
+00ED            103   Timer0_Init:
+00ED E589       104            mov a, TMOD
+00EF 54F0       105            anl a, #0xf0 ; Clear the bits for timer 0
+00F1 4401       106            orl a, #0x01 ; Configure timer 0 as 16-timer
+00F3 F589       107            mov TMOD, a
+00F5 758CEA     108            mov TH0, #high(TIMER0_RELOAD)
+00F8 758AE8     109            mov TL0, #low(TIMER0_RELOAD)
+00FB            110            ; Set autoreload value
+00FB 75F4EA     111            mov TIMER0_RELOAD_H, #high(TIMER0_RELOAD)
+00FE 75F2E8     112            mov TIMER0_RELOAD_L, #low(TIMER0_RELOAD)
+0101            113            ; Enable the timer and interrupts
+0101 D2A9       114       setb ET0  ; Enable timer 0 interrupt
+0103 D28C       115       setb TR0  ; Start timer 0
+0105 22         116            ret
+0106            117   
+0106            118   ;---------------------------------;
+0106            119   ; ISR for timer 0.  Set to execute;
+0106            120   ; every 1/4096Hz to generate a    ;
+0106            121   ; 2048 Hz square wave at pin P3.7 ;
+0106            122   ;---------------------------------;
+0106            123   Timer0_ISR:
+0106            124            ;clr TF0  ; According to the data sheet this is done for us already.
+0106 B2B7       125            cpl SOUND_OUT ; Connect speaker to P3.7!
+0108 32         126            reti
+0109            127   
+0109            128   ;---------------------------------;
+0109            129   ; Routine to initialize the ISR   ;
+0109            130   ; for timer 2                     ;
+0109            131   ;---------------------------------;
+0109            132   Timer2_Init:
+0109 75C800     133            mov T2CON, #0 ; Stop timer/counter.  Autoreload mode.
+010C 75CDA9     134            mov TH2, #high(TIMER2_RELOAD)
+010F 75CC9A     135            mov TL2, #low(TIMER2_RELOAD)
+0112            136            ; Set the reload value
+0112 75CBA9     137            mov RCAP2H, #high(TIMER2_RELOAD)
+0115 75CA9A     138            mov RCAP2L, #low(TIMER2_RELOAD)
+0118            139            ; Init One millisecond interrupt counter.  It is a 16-bit variable made with two 8-bit parts
+0118 E4         140            clr a
+0119 F530       141            mov Count1ms+0, a
+011B F531       142            mov Count1ms+1, a
+011D            143            ; Enable the timer and interrupts
+011D D2AD       144       setb ET2  ; Enable timer 2 interrupt
+011F D2CA       145       setb TR2  ; Enable timer 2
+0121 22         146            ret
+0122            147   
+0122            148   ; Pattern to load passed in accumulator
+0122            149   load_segments:
+0122 A2E0       150            mov c, acc.0
+0124 9282       151            mov SEGA, c
+0126 A2E1       152            mov c, acc.1
+0128 9280       153            mov SEGB, c
+012A A2E2       154            mov c, acc.2
+012C 92B6       155            mov SEGC, c
+012E A2E3       156            mov c, acc.3
+0130 92A7       157            mov SEGD, c
+0132 A2E4       158            mov c, acc.4
+0134 92C5       159            mov SEGE, c
+0136 A2E5       160            mov c, acc.5
+0138 9287       161            mov SEGF, c
+013A A2E6       162            mov c, acc.6
+013C 92A6       163            mov SEGG, c
+013E A2E7       164            mov c, acc.7
+0140 92A5       165            mov SEGP, c
+0142 22         166            ret
+0143            167   
+0143            168   ;---------------------------------;
+0143            169   ; ISR for timer 2                 ;
+0143            170   ;---------------------------------;
+0143            171   Timer2_ISR:
+0143 C2CF       172            clr TF2  ; Timer 2 doesn't clear TF2 automatically. Do it in ISR
+0145 B2B6       173            cpl P3.6 ; To check the interrupt rate with oscilloscope. It must be precisely a 1 ms pulse.
+0147            174            
+0147            175            ; The two registers used in the ISR must be saved in the stack
+0147 C0E0       176            push acc
+0149 C0D0       177            push psw
+014B            178   
+014B            179   ;;;  State machine for 7-segment displays starts here
+014B            180            ; Turn all displays off
+014B D285       181            setb CA1
+014D D286       182            setb CA2
+014F            183            ;setb CA3
+014F            184   
+014F E536       185            mov a, statehex
+0151            186   state0:
+0151 B4000B     187            cjne a, #0, state1
+0154 E533       188            mov a, disp1
+0156 120122     189            lcall load_segments
+0159 C285       190            clr CA1
+015B 0536       191            inc statehex
+015D 8020       192            sjmp state_done
+015F            193   state1:
+015F B4010B     194            cjne a, #1, state2
+0162 E534       195            mov a, disp2
+0164 120122     196            lcall load_segments
+0167 C286       197            clr CA2
+0169 0536       198            inc statehex
+016B 8012       199            sjmp state_done
+016D            200   state2:
+016D B4020C     201            cjne a, #2, state_reset
+0170 E535       202            mov a, disp3
+0172 120122     203            lcall load_segments
+0175 C284       204            clr CA3
+0177 753600     205            mov statehex, #0
+017A 8003       206            sjmp state_done
+017C            207   state_reset:
+017C 753600     208            mov statehex, #0
+017F            209   state_done:
+017F            210   ;;;  State machine for 7-segment displays ends here
+017F            211            
+017F            212            ; Increment the 16-bit one mili second counter
+017F 0530       213            inc Count1ms+0    ; Increment the low 8-bits first
+0181 E530       214            mov a, Count1ms+0 ; If the low 8-bits overflow, then increment high 8-bits
+0183 7002       215            jnz Inc_Done
+0185 0531       216            inc Count1ms+1
+0187            217   
+0187            218   Inc_Done:
+0187            219            ; Check if half second has passed
+0187 E530       220            mov a, Count1ms+0
+0189 B4641C     221            cjne a, #low(100), Timer2_ISR_done ; Warning: this instruction changes the carry flag!
+018C E531       222            mov a, Count1ms+1
+018E B40017     223            cjne a, #high(100), Timer2_ISR_done
+0191            224            
+0191            225            ; 500 milliseconds have passed.  Set a flag so the main program knows
+0191 D200       226            setb half_seconds_flag ; Let the main program know half second had passed
+0193 B28C       227            cpl TR0 ; Enable/disable timer/counter 0. This line creates a beep-silence-beep-silence sound.
+0195            228            ; Reset to zero the milli-seconds counter, it is a 16-bit variable
+0195 E4         229            clr a
+0196 F530       230            mov Count1ms+0, a
+0198 F531       231            mov Count1ms+1, a
+019A            232            ; Increment the BCD counter
+019A E532       233            mov a, BCD_counter
+019C 309004     234            jnb UPDOWN, Timer2_ISR_decrement
+019F 2401       235            add a, #0x01
+01A1 8002       236            sjmp Timer2_ISR_da
+01A3            237   Timer2_ISR_decrement:
+01A3 2499       238            add a, #0x99 ; Adding the 10-complement of -1 is like subtracting 1.
+01A5            239   Timer2_ISR_da:
+01A5 D4         240            da a ; Decimal adjust instruction.  Check datasheet for more details!
+01A6 F532       241            mov BCD_counter, a
+01A8            242            
+01A8            243   Timer2_ISR_done:
+01A8 D0D0       244            pop psw
+01AA D0E0       245            pop acc
+01AC 32         246            reti
+01AD            247   
+01AD C0F9A4B0   248   HEX_7SEG: DB 0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 0x82, 0xF8, 0x80, 0x90
+     999282F8
+     8090
+01B7            249   
+01B7            250   ;---------------------------------;
+01B7            251   ; Main program. Includes hardware ;
+01B7            252   ; initialization and 'forever'    ;
+01B7            253   ; loop.                           ;
+01B7            254   ;---------------------------------;
+01B7            255   main:
+01B7            256            ; Initialization
+01B7 75817F     257       mov SP, #0x7F
+01BA 1200ED     258       lcall Timer0_Init
+01BD 120109     259       lcall Timer2_Init
+01C0            260       ; In case you decide to use the pins of P0, configure the port in bidirectional mode:
+01C0 75E600     261       mov P0M0, #0
+01C3 75E700     262       mov P0M1, #0
+01C6 758E11     263       mov AUXR, #00010001B ; Max memory.  P4.4 is a general purpose IO pin
+01C9 D2AF       264       setb EA   ; Enable Global interrupts
+01CB 120088     265       lcall LCD_4BIT
+01CE            266       ; For convenience a few handy macros are included in 'LCD_4bit.inc':
+01CE C0E0       267            push acc
+01D0 7401       267            mov a, #1
+01D2 14         267            dec a
+01D3 1200C1     267            lcall ?Set_Cursor_1 ; Select column and row
+01D6 D0E0       267            pop acc
+01D8 C083       268            push dph
+01DA C082       268            push dpl
+01DC C0E0       268            push acc
+01DE 9000DC     268            mov dptr, #Initial_Message
+01E1 1200B4     268            lcall ?Send_Constant_String
+01E4 D0E0       268            pop acc
+01E6 D082       268            pop dpl
+01E8 D083       268            pop dph
+01EA D200       269       setb half_seconds_flag
+01EC 753200     270            mov BCD_counter, #0x00
+01EF            271            
+01EF            272            
+01EF 753600     273            mov statehex, #0
+01F2            274            
+01F2            275            ; After initialization the program stays in this 'forever' loop
+01F2            276   loop:
+01F2 20A41C     277            jb CLEAR, loop_a  ; if the 'BOOT' button is not pressed skip
+01F5 C002       278            push AR2
+01F7 7A32       278            mov R2, #50
+01F9 120039     278            lcall ?Wait_Milli_Seconds
+01FC D002       278            pop AR2         ; Debounce delay.  This macro is also in 'LCD_4bit.inc'
+01FE 20A410     279            jb CLEAR, loop_a  ; if the 'BOOT' button is not pressed skip
+0201 30A4FD     280            jnb CLEAR, $            ; Wait for button release.  The '$' means: jump to same instruction.
+0204            281            ; A valid press of the 'BOOT' button has been detected, reset the BCD counter.
+0204            282            ; But first stop timer 2 and reset the milli-seconds counter, to resync everything.
+0204 C2CA       283            clr TR2                 ; Stop timer 2
+0206 E4         284            clr a
+0207 F530       285            mov Count1ms+0, a
+0209 F531       286            mov Count1ms+1, a
+020B            287            ; Now clear the BCD counter
+020B F532       288            mov BCD_counter, a
+020D D2CA       289            setb TR2                ; Start timer 2
+020F 8003       290            sjmp loop_b             ; Display the new value
+0211            291   loop_a:
+0211 3000DE     292            jnb half_seconds_flag, loop
+0214            293   loop_b:
+0214 C200       294       clr half_seconds_flag ; We clear this flag in the main loop, but it is set in the ISR for timer 2
+0216 C0E0       295            push acc
+0218 740E       295            mov a, #14
+021A 14         295            dec a
+021B 1200C1     295            lcall ?Set_Cursor_1 ; Select column and row
+021E D0E0       295            pop acc     ; the place in the LCD where we want the BCD counter value
+0220 C000       296            push ar0
+0222 A832       296            mov r0, BCD_counter
+0224 1200C6     296            lcall ?Display_BCD
+0227 D000       296            pop ar0 ; This macro is also in 'LCD_4bit.inc'
+0229 9001AD     297            mov dptr, #HEX_7SEG
+022C E532       298            mov a, BCD_counter
+022E 540F       299            anl a, #0x0f
+0230 93         300            movc a, @a+dptr
+0231 F533       301            mov disp1, a
+0233 E532       302            mov a, BCD_counter
+0235 C4         303            swap a
+0236 540F       304            anl a, #0x0f
+0238 93         305            movc a, @a+dptr
+0239 F534       306            mov disp2, a
+023B 7400       307            mov a, #0x0
+023D 540F       308                    anl a, #0x0f
+023F 93         309            movc a, @a+dptr
+0240            310            ;mov disp3, #0xff
+0240            311            
+0240 0201F2     312       ljmp loop
+0243            313   EN

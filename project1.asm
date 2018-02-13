@@ -16,7 +16,7 @@ TIMER0_RELOAD_H DATA 0xf4
 TIMER1_RELOAD_H DATA 0xf5
 
 CLK           EQU 22118400 ; Microcontroller system crystal frequency in Hz
-TIMER0_RATE   EQU 1000    ; 2048Hz squarewave (peak amplitude of CEM-1203 speaker)
+TIMER0_RATE   EQU 4096    ; 2048Hz squarewave (peak amplitude of CEM-1203 speaker)
 TIMER0_RELOAD EQU ((65536-(CLK/TIMER0_RATE)))
 TIMER2_RATE   EQU 1000     ; 1000Hz, for a timer tick of 1ms
 TIMER2_RELOAD EQU ((65536-(CLK/TIMER2_RATE)))
@@ -30,7 +30,7 @@ BOOT_BUTTON   equ P4.5
 ADD_ONE       equ p0.1
 SOUND_OUT 	  equ p4.4
 NEXT		  equ p2.4
-
+RESET		  equ p3.7
 
 
 
@@ -81,18 +81,23 @@ currenttemp: ds 1
 pwm:		  ds 2
 state: ds 1
 statealarm: ds 1
+statehex:   ds 1
 
+
+
+Disp1:  ds 1 
+Disp2:  ds 1
+Disp3:  ds 1
 
 
 ;FLAGS
 ; In the 8051 we have variables that are 1-bit in size.  We can use the setb, clr, jb, and jnb
 ; instructions with these variables.  This is how you define a 1-bit variable:
+
 bseg
 half_seconds_flag: dbit 1 ; Set to one in the ISR every time 500 ms had passed
-no_alarm: dbit 0
+sound_alarm: dbit 1
 mf: dbit 1
-
-
 
 cseg
 ; These 'equ' must match the wiring between the microcontroller and the LCD!
@@ -111,10 +116,25 @@ MY_MISO EQU P2.2
 MY_SCLK EQU P2.3
 
 
+SEGA equ P0.2
+SEGB equ P0.0
+SEGC equ P3.6
+SEGD equ P2.7			;PINS FOR THE LED HEX DISPLAY
+SEGE equ P4.5
+SEGF equ P0.7
+SEGG equ P2.6
+SEGP equ P2.5
+CA1  equ P0.5
+CA2  equ P0.6
+CA3  equ P0.4
+
+
+
 $NOLIST
 $include(LCD_4bit.inc) ; A library of LCD related functions and utility macros
-$include(math32.inc)
-$include(macro1.inc)
+$include(math32.inc)	;CONTAINS MATH FUNCTIONS
+$include(macro1.inc)	;CONTAINS A COUPLE USEFUL MACROS
+$include(functions.inc)	;MAJORITY OF FUNCTIONS LIVE IN HERE!
 $LIST
 
 ;add menu display messages here!
@@ -136,6 +156,10 @@ coolenough:				db ' YOUVE GOT ONE  ',0
 coolenough1:			db '    COOL BOY    ',0
 
 
+HEX_7SEG: 				DB 0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 0x82, 0xF8, 0x80, 0x90
+
+
+
 ;SET UP TIMERS!!!!!!!!!!!!!! (LAB 2)
 ;---------------------------------;
 ; Routine to initialize the ISR   ;
@@ -152,7 +176,7 @@ Timer0_Init:
 	mov TIMER0_RELOAD_L, #low(TIMER0_RELOAD)
 	; Enable the timer and interrupts
     setb ET0  ; Enable timer 0 interrupt
-    ;setb TR0  ; Start timer 
+    setb TR0  ; Start timer 
 	ret
 
 ;---------------------------------;
@@ -161,13 +185,10 @@ Timer0_Init:
 ; 2048 Hz square wave at pin P3.7 ;
 ;---------------------------------;
 Timer0_ISR:
-	clr TF0  ; According to the data sheet this is done for us already.
-	jnb no_alarm, don
-	cpl SOUND_OUT ; Connect speaker to P3.7!
-	lcall delay
-	clr SOUND_OUT
-clr no_alarm
-	don:
+;	clr TF0  ; According to the data sheet this is done for us already.
+;	setb SOUND_OUT
+	;jnb sound_alarm, don
+   cpl SOUND_OUT
 	reti
 
 ;---------------------------------;
@@ -195,22 +216,50 @@ Timer2_ISR:
 	cpl P3.6 ; To check the interrupt rate with oscilloscope. It must be precisely a 1 ms pulse.
 	push acc
 	push psw
+	setb CA1
+	setb CA2
+	setb CA3
+	mov a, statehex
+state0:							;ADD STATES TO INITIALIZE THE HEX DISPLAY
+	cjne a, #0, state1
+	mov a, disp1
+	lcall load_segments
+	clr CA1
+	inc statehex
+	sjmp state_done
+state1:
+	cjne a, #1, state2
+	mov a, disp2
+	lcall load_segments
+	clr CA2
+	inc statehex
+	sjmp state_done
+state2:
+	cjne a, #2, state_reset
+	mov a, disp3
+	lcall load_segments
+	clr CA3
+	inc statehex
+;	mov statehex, #0
+	sjmp state_done
+state_reset:
+	mov statehex, #0
+state_done:
 	inc Count1ms+0    ; Increment the low 8-bits first
 	mov a, Count1ms+0 ; If the low 8-bits overflow, then increment high 8-bits
 	jnz Inc_Done
 	inc Count1ms+1
 	
+	
+	
 Inc_Done:
 	; Check if half second has passed
 	clr c
-	
 	mov a, count1ms+0
 	subb a, pwm+0
 	mov a, count1ms+1
 	subb a, pwm+1
 	mov P0.3, c
-	
-	
 	mov a, Count1ms+0
 	cjne a, #low(1000), Timer2_ISR_done ; Warning: this instruction changes the carry flag!
 	mov a, Count1ms+1
@@ -254,102 +303,11 @@ DO_SPI_G_LOOP:
  pop acc
  ret
  
- 
-delay:
-	Wait_Milli_Seconds(#190) 
-InitSerialPort:
-    ; Since the reset button bounces, we need to wait a bit before
-    ; sending messages, otherwise we risk displaying gibberish!
-    mov R1, #222
-    mov R0, #166
-    djnz R0, $   ; 3 cycles->3*45.21123ns*166=22.51519us
-    djnz R1, $-4 ; 22.51519us*222=4.998ms
-    ; Now we can proceed with the configuration
-	orl	PCON,#0x80
-	mov	SCON,#0x52
-	mov	BDRCON,#0x00
-	mov	BRL,#BRG_VAL
-	mov	BDRCON,#0x1E ; BDRCON=BRR|TBCK|RBCK|SPD;
-    ret
-
-; Send a character using the serial port
-putchar:
-    jnb TI, putchar
-    clr TI
-    mov SBUF, a
-    ret
-
-; Send a constant-zero-terminated string using the serial port
-SendString:
-    clr A
-    movc A, @A+DPTR
-    jz SendStringDone
-    lcall putchar
-    inc DPTR
-    sjmp SendString
-SendStringDone:
-    ret
-    
-Do_Something_With_Result:
-
-	;CONVERT TO TEMPERATURE
-	mov x, Result
-	mov x+1, Result+1
-	mov x+2, #0
-	mov x+3, #0
-	load_y(45)
-	lcall mul32
-	load_y(100)
-	lcall div32
-	load_y(26)
-	lcall add32
-	;load_y(7016)
-	;lcall sub32
-	mov a, x
-	da a
-	lcall hex2bcd
-	
-	;LCD DISPLAY
-	Set_Cursor(1, 3)
-	Display_BCD(bcd+1)					
-	Set_Cursor(1, 5)
-	Display_BCD(bcd)
-
-	
-	;PUTTY DISPLAY
-	mov a, bcd+1
-	swap a
-	anl a, #0fh
-	orl a, #30h
-	lcall putchar
-	mov a, bcd+1
-	anl a, #0fh
-	orl a, #30h
-	lcall putchar
-	mov a, bcd+0
-	swap a
-	anl a, #0fh
-	orl a, #30h
-	lcall putchar
-	mov a, bcd+0
-	anl a, #0fh
-	orl a, #30h
-	lcall putchar
-	mov a, #'\r'
-	lcall putchar
-	mov a, #'\n'
-	lcall putchar
-ret
-
-
-beep:
-	setb SOUND_OUT
-    lcall delay
-    lcall delay
-    clr SOUND_OUT
-    lcall delay
-    ret
-  
+   
+   
+   
+   
+   
 
 main:
     mov SP, #0x7F
@@ -372,8 +330,10 @@ main:
 	mov pwm+1, #high(0)
 	mov state, #0x1
     mov statealarm, #1
-    clr no_alarm
+   ; clr no_alarm
+   clr TR0
     clr SOUND_OUT
+    mov statehex, #0
     
     
     ;SET SOAK TEMPERATURE
@@ -454,53 +414,48 @@ main:
     mov hunsec, #0
     mov second, #0
     
-    
-    ;LOOP UPDATING REAL TIME TEMPERATURE
-    forever1:
-	lcall forever
+    forever1:										;LOOP UPDATING REAL TIME TEMPERATURE AND HEX DISPLAY
+	lcall forever		
+	lcall hexdisplay
+	lcall checkreset
 	
-
-	;ONE BEEP EACH NEW STATE
-	mov a, statealarm
-    cjne a, state, nope
+	mov a, statealarm								;ONE BEEP EACH NEW STATE HERE
+    cjne a, state, ramptosoak
     add a, #1
     da a
     mov statealarm, a
     lcall beep
-    nope:
+    
+    									;RAMP TO SOAK//////////////////////////////////
+    
+    ramptosoak:
 	mov a, state
-	cjne a, #1, soak
-	
-	;USING TIMER 2 FOR BAKE CLOCK
+	cjne a, #1, soak								;USING TIMER 2 FOR BAKE CLOCK
 	displayvariable(11,second,10,hunsec)
 	Set_Cursor(2,1)
 	Send_Constant_String(#state1dis)
-
-	;MAX POWER TO OVEN
-	mov pwm+0, #low(1000) 
+	mov pwm+0, #low(1000) 							;MAX POWER TO THE OVEN
 	mov pwm+1, #high(1000) 
-
-	mov a, second			;safety case
-	cjne a, #0x60, not60
+	mov a, second									;safety case
+	cjne a, #0x60, not60							;checks to see if at least 50C in first 60sec
 	mov a, hun
 	cjne a, #0, not60	
 	mov a, #0x50
 	subb a, bcd
-	jnc escape			;basically checking for overflow
+	jnc escape										;basically checking for overflow
 	sjmp not60
 
-	;DOESNT REACH 50C WITHIN 60 SEC
-	escape:
+
+	escape:											;DOESNT REACH 50C WITHIN 60 SEC ESCAPE OUT
 	mov statealarm, #1
 	mov state, #1
 	mov pwm+0, #low(0) 
 	mov pwm+1, #high(0) 
 	ljmp redo
-	
-	not60:
+	not60:											;this bit checks to see if current temp matches chosen soak temp
 	mov a, hun
-	cjne a, bcd+1, cont
-	mov a, soaktemp		;passes safety check. or 60 seconds have not passes. now checking for ramp to soak temp set earlier
+	cjne a, bcd+1, cont							
+	mov a, soaktemp		
 	cjne a, bcd, cont
 	sjmp gogo
 	cont:
@@ -510,41 +465,35 @@ main:
 	mov second, #0
 	mov hunsec, #0
 	
+										;SOAK//////////////////////////////
+	
 	soak:
 	mov a, state
 	cjne a, #2, ramptoreflow
-	;USING TIMER 2 FOR BAKE CLOCK
-	displayvariable(11,second,10,hunsec)
+	displayvariable(11,second,10,hunsec)			;USING TIMER 2 FOR BAKE CLOCK
 	Set_Cursor(2,1)
-	Send_Constant_String(#state2dis)
-	;SET OVEN TO MEDIUM POWER
-	mov pwm+0, #low(0) 
-	mov pwm+1, #high(0)
-	
-	;CHECKING IF SOAK TIME MET
-	mov a, hunsec
+	Send_Constant_String(#state2dis)				;SET OVEN TO MEDIUM POWER
+	mov pwm+0, #low(250) 
+	mov pwm+1, #high(250)
+	mov a, hunsec									;CHECKING IF SOAK TIME MET
 	cjne a, hun1, cont
 	mov a, second
 	cjne a, soaktime, cont
-	
-	;CONTINUE TO NEXT STATE RESET TIME
-	mov state, #3
+	mov state, #3									;CONTINUE TO NEXT STATE RESET TIME
 	mov second, #0
 	mov hunsec, #0
-	
-	
+		
+										;RAMP TO REFLOW//////////////////////
+																			
 	ramptoreflow:
 	mov a, state
 	cjne a, #3, reflow
-	;DISPLAYING TIME VARIABLE ONCE AGAIN
-	displayvariable(11,second,10,hunsec)
+	displayvariable(11,second,10,hunsec)			;DISPLAYING TIME VARIABLE ONCE AGAIN
 	Set_Cursor(2,1)
 	Send_Constant_String(#state3dis)
-	;SETTING OVEN TO MAX POWER
-	mov pwm+0, #low(1000) 
+	mov pwm+0, #low(1000) 							;SETTING OVEN TO MAX POWER
 	mov pwm+1, #high(1000) 
-	;CHECKING TO SEE IF RAMP TEMPERATURE MET
-	mov a, hun2
+	mov a, hun2										;CHECKING TO SEE IF RAMP TEMPERATURE MET
 	cjne a, bcd+1, cont1
 	mov a, bcd
 	cjne a, reflowtemp, cont1
@@ -552,49 +501,40 @@ main:
 	cont1:
 	ljmp forever1
 	gogo1:
-
-	;MOVING ON TO NEXT STATE
-	mov state, #4
+	mov state, #4									;MOVING ON TO NEXT STATE
 	mov second, #0
 	mov hunsec, #0
 	
+								    	;REFLOW//////////////////////
 	
 	reflow:
 	mov a, state
-	cjne a, #4, coolmike
-	;DISPLAY TIME VARIABLE
+	cjne a, #4, coolmike							;DISPLAY TIME VARIABLE
 	displayvariable(11,second,10,hunsec)
 	Set_Cursor(2,1)
-	Send_Constant_String(#state4dis)
-	;SET OVEN TO ABOVE MEDIUM POWER
-	mov pwm+0, #low(0)
-	mov pwm+1, #high(0) 
-	;CHECK IF REFLOW TIME MET
-	mov a, hun3
+	Send_Constant_String(#state4dis)				;SET OVEN TO 20% POWER
+	mov pwm+0, #low(100)
+	mov pwm+1, #high(100) 						
+	mov a, hun3										;CHECK IF REFLOW TIME MET
 	cjne a, hunsec, cont1
 	mov a, second
-	cjne a, reflowtime, cont1
-	
-	;MOVING ON TO COOL STATE
-	mov state, #5
+	cjne a, reflowtime, cont1						
+	mov state, #5									;MOVING ON TO COOL STATE
 	mov second, #0
 	mov hunsec, #0
+	
+										;COOL////////////////////////
 	
 	coolmike:
 	displayvariable(11,second,10,hunsec)
 	Set_Cursor(2,1)
 	Send_Constant_String(#state5dis)
-	;TURN OFF OVEN
-	mov pwm+0, #low(0) 
+	mov pwm+0, #low(0) 								;TURN OFF OVEN TO COOL
 	mov pwm+1, #high(0) 
-	
-	
-	;CHECKING IF COOL ENOUGH TO HANDEL
-	mov a, hun2
+	mov a, hun2										;CHECKING IF COOL ENOUGH TO HANDEL
 	cjne a, bcd+1, cont2
 	mov a, bcd
 	cjne a, #0x30, cont2
-	
 	Set_Cursor(2,1)
 	Send_Constant_String(#coolenough1)
 	Set_Cursor(1,1)
@@ -605,14 +545,11 @@ main:
 	lcall beep
 	lcall beep
 	lcall beep
-
-	
 	ending:
-	sjmp ending
-	;add beep sounds for letting the person know that its cool enough, like 30 celcisu
+	sjmp ending	
 	cont2:
     ljmp forever1 
-    
+
     
   
-	end
+	end 				;///////////////////////////////////////////////////////////////////////////////

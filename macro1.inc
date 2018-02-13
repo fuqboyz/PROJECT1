@@ -1,5 +1,11 @@
 $NOLIST
 
+
+				;//////////in this file there are five or six macros that are used during////////////////
+				;//////////the interface initialization, as well as during the oven state machine////////
+
+
+
 CSEG
 
 movebcd mac	
@@ -66,23 +72,5 @@ endmac
 
 
 
-forever:
-    clr CE_ADC
-	mov R0, #00000001B ; Start bit:1
-	lcall DO_SPI_G
-	mov R0, #10000000B ; Single ended, read channel 0
-	lcall DO_SPI_G
-	mov a, R1 ; R1 contains bits 8 and 9
-	anl a, #00000011B ; We need only the two least significant bits
-	mov Result+1, a ; Save result high.
-	mov R0, #55H ; It doesn't matter what we transmit...
-	lcall DO_SPI_G
-	mov Result, R1 ; R1 contains bits 0 to 7. Save result low.
-	setb CE_ADC
-	lcall Delay
-	
-	;RETRIEVING TEMPERATURE OF OVEN
-	lcall Do_Something_With_Result
-	ret
 
 $LIST
